@@ -9,7 +9,7 @@ const STRANGER_POOL = [
     age: 24,
     avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80',
     videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-    greeting: 'Hola! Nice to connect from Barcelona 👋'
+    greeting: 'Hola! Nice to connect from Barcelona'
   },
   {
     id: 'usr-stranger-02',

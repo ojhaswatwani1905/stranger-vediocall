@@ -2,15 +2,8 @@ import React, { useState } from 'react';
 import { Coins, X, ShoppingCart, ArrowUpRight, ArrowDownLeft, RefreshCw, CheckCircle2, CreditCard, Wallet, History } from 'lucide-react';
 import { useWallet } from '../../context/WalletContext';
 
-const COIN_PACKS = [
-  { id: 'pack-100', amount: 100, price: 0.99, label: 'Starter', badge: null },
-  { id: 'pack-500', amount: 500, price: 3.99, label: 'Popular', badge: '⭐ Best Value' },
-  { id: 'pack-1000', amount: 1000, price: 6.99, label: 'Premium', badge: '🔥 Most Coins' },
-  { id: 'pack-5000', amount: 5000, price: 24.99, label: 'VIP', badge: '💎 VIP' }
-];
-
 export const WalletModal = ({ isOpen, onClose }) => {
-  const { balance, transactions, purchaseCoins, spendCoins, unlockedFilters, FILTER_PRICES } = useWallet();
+  const { balance, transactions, purchaseCoins, spendCoins, unlockedFilters, FILTER_PRICES, coinPacks } = useWallet();
   const [tab, setTab] = useState('buy'); // buy | history | filters
   const [purchasing, setPurchasing] = useState(null);
   const [purchaseSuccess, setPurchaseSuccess] = useState(null);
@@ -33,8 +26,8 @@ export const WalletModal = ({ isOpen, onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-      <div className="relative w-full max-w-lg glass-panel rounded-3xl overflow-hidden border border-amber-500/15 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md">
+      <div className="relative w-full max-w-lg glass-panel rounded-3xl overflow-y-auto max-h-[90vh] border border-amber-500/15 shadow-2xl no-scrollbar">
         
         {/* Ambient glow */}
         <div className="absolute -top-20 -left-20 w-40 h-40 bg-amber-500/15 rounded-full blur-3xl pointer-events-none" />
@@ -115,7 +108,7 @@ export const WalletModal = ({ isOpen, onClose }) => {
           {/* BUY COINS TAB */}
           {tab === 'buy' && (
             <div className="grid grid-cols-2 gap-3">
-              {COIN_PACKS.map((pack) => (
+              {(coinPacks || []).filter((p) => p.active).map((pack) => (
                 <button
                   key={pack.id}
                   onClick={() => handlePurchase(pack)}
@@ -131,7 +124,7 @@ export const WalletModal = ({ isOpen, onClose }) => {
                     <Coins className="w-5 h-5 text-amber-400" />
                     <span className="text-lg font-bold text-white">{pack.amount.toLocaleString()}</span>
                   </div>
-                  <p className="text-[11px] text-slate-400 mb-3">{pack.label} Pack</p>
+                  <p className="text-[11px] text-slate-400 mb-3">{pack.name || pack.label}</p>
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-bold text-emerald-400">${pack.price}</span>
                     {purchasing === pack.id ? (

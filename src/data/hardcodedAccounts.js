@@ -1,0 +1,62 @@
+export const HARDCODED_ACCOUNTS = [
+  {
+    id: 'usr-88329',
+    email: 'alex@betadrix.com',
+    password: 'password123',
+    name: 'Alex Vance',
+    dob: '1998-05-14',
+    age: 28,
+    gender: 'non-binary',
+    country: 'United States',
+    role: 'user',
+    isAdmin: false,
+    isAgeVerified: true,
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+    tagline: 'Standard User Account'
+  },
+  {
+    id: 'usr-11029',
+    email: 'elena@betadrix.com',
+    password: 'password123',
+    name: 'Elena Rostova',
+    dob: '2001-08-22',
+    age: 24,
+    gender: 'female',
+    country: 'Spain',
+    role: 'user',
+    isAdmin: false,
+    isAgeVerified: true,
+    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
+    tagline: 'Verified Female User Account'
+  },
+  {
+    id: 'usr-44910',
+    email: 'jordan@betadrix.com',
+    password: 'password123',
+    name: 'Jordan Lee',
+    dob: '1996-11-03',
+    age: 29,
+    gender: 'male',
+    country: 'South Korea',
+    role: 'user',
+    isAdmin: false,
+    isAgeVerified: true,
+    avatar: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150&auto=format&fit=crop&q=80',
+    tagline: 'Verified Male User Account'
+  },
+  {
+    id: 'usr-00001',
+    email: 'admin@betadrix.com',
+    password: 'admin123',
+    name: 'Admin Master',
+    dob: '1990-01-01',
+    age: 36,
+    gender: 'male',
+    country: 'United States',
+    role: 'admin',
+    isAdmin: true,
+    isAgeVerified: true,
+    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
+    tagline: 'Full Platform Admin Account'
+  }
+];

@@ -80,8 +80,8 @@ export const ReportModal = ({ isOpen, onClose, reportedUser, sessionId }) => {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-      <div className="relative w-full max-w-md glass-panel rounded-3xl p-6 border border-rose-500/20 shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md">
+      <div className="relative w-full max-w-md glass-panel rounded-3xl p-5 sm:p-6 border border-rose-500/20 shadow-2xl overflow-y-auto max-h-[90vh] no-scrollbar">
         
         {/* Decorative gradient */}
         <div className="absolute -top-20 -right-20 w-40 h-40 bg-rose-600/20 rounded-full blur-3xl pointer-events-none" />

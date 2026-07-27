@@ -37,8 +37,8 @@ export const OnboardingModal = ({ isOpen, onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-      <div className="relative w-full max-w-lg glass-panel rounded-3xl p-6 sm:p-8 border border-violet-500/20 shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
+      <div className="relative w-full max-w-lg glass-panel rounded-3xl p-5 sm:p-8 border border-violet-500/20 shadow-2xl overflow-y-auto max-h-[90vh] no-scrollbar">
         
         {/* Decorative background ambient light */}
         <div className="absolute -top-24 -right-24 w-48 h-48 bg-violet-600/30 rounded-full blur-3xl pointer-events-none" />

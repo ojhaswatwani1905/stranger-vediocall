@@ -1,6 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
 import { VideoCallView } from './components/Call/VideoCallView';
+import { LandingPage } from './pages/LandingPage';
+import { AuthPage } from './pages/AuthPage';
+import { AuthModal } from './components/Auth/AuthModal';
 import { ReportModal } from './components/Safety/ReportModal';
 import { WalletModal } from './components/Wallet/WalletModal';
 import { OnboardingModal } from './components/Auth/OnboardingModal';
@@ -10,17 +13,17 @@ import { useAuth } from './context/AuthContext';
 
 function App() {
   const { unlockedFilters } = useWallet();
-  const { isOnboarded, user } = useAuth();
+  const { isOnboarded, user, loginWithCredentials } = useAuth();
 
-  // Platform mode: 'user' | 'admin'
-  const [currentMode, setCurrentMode] = useState('user');
+  // Platform mode: 'user' | 'landing' | 'admin'
+  const [currentMode, setCurrentMode] = useState('landing');
 
-  const isAdmin = user?.role === 'admin' || user?.isAdmin;
-  const activeMode = isAdmin ? currentMode : 'user';
+  const activeMode = currentMode;
 
   // Modal states
   const [walletOpen, setWalletOpen] = useState(false);
-  const [authOpen, setAuthOpen] = useState(!isOnboarded);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalTab, setAuthModalTab] = useState('signin');
   const [reportOpen, setReportOpen] = useState(false);
   const [reportTarget, setReportTarget] = useState({ user: null, sessionId: null });
 
@@ -35,34 +38,79 @@ function App() {
     }, 4000);
   }, []);
 
+  const openAuth = (tab = 'signin') => {
+    setAuthModalTab(tab);
+    setAuthModalOpen(true);
+  };
+
   // Report handler from VideoCallView
   const handleReport = useCallback((user, sessionId) => {
     setReportTarget({ user, sessionId });
     setReportOpen(true);
   }, []);
 
+  // Mode navigation handler enforcing mandatory auth before video chat
+  const handleNavigateMode = (targetMode) => {
+    if (targetMode === 'signin' || targetMode === 'signup') {
+      openAuth(targetMode);
+      return;
+    }
+    if (targetMode === 'user' && !user) {
+      addToast('Authentication Required: Please Sign In or Create an 18+ Account first.', 'error');
+      openAuth('signin');
+      return;
+    }
+    if (targetMode === 'admin' && (!user || (user.role !== 'admin' && !user.isAdmin))) {
+      loginWithCredentials('admin@betadrix.com', 'admin123');
+      addToast('Authenticated as Admin Master', 'info');
+    }
+    setCurrentMode(targetMode);
+  };
+
   return (
     <div className="min-h-screen bg-[var(--bg-dark)]">
       {/* ═══ NAVBAR ═══ */}
       <Navbar
         currentMode={activeMode}
-        setCurrentMode={setCurrentMode}
+        setCurrentMode={handleNavigateMode}
         onOpenWallet={() => setWalletOpen(true)}
-        onOpenAuth={() => setAuthOpen(true)}
+        onOpenAuth={(tab) => openAuth(tab || 'signin')}
       />
 
       {/* ═══ MAIN CONTENT ═══ */}
-      {activeMode === 'user' ? (
+      {activeMode === 'landing' ? (
+        <LandingPage
+          onLaunchApp={() => handleNavigateMode('user')}
+          onOpenWallet={() => setWalletOpen(true)}
+          onOpenAuth={(tab) => openAuth(tab || 'signin')}
+          onOpenAdmin={() => handleNavigateMode('admin')}
+        />
+      ) : activeMode === 'user' ? (
         <VideoCallView
           onReport={handleReport}
           walletFilters={unlockedFilters}
           onOpenWallet={() => setWalletOpen(true)}
+          onOpenAuth={() => {
+            addToast('Authentication Required: Please Sign In to start matching.', 'error');
+            openAuth('signin');
+          }}
         />
       ) : (
         <AdminDashboard />
       )}
 
       {/* ═══ MODALS ═══ */}
+      <AuthModal
+        isOpen={authModalOpen}
+        initialTab={authModalTab}
+        onClose={() => setAuthModalOpen(false)}
+        onSuccess={(loggedInUser) => {
+          const isAdminUser = loggedInUser?.isAdmin || loggedInUser?.role === 'admin';
+          addToast(`Welcome, ${loggedInUser.name.split(' ')[0]}!`, 'success');
+          setCurrentMode(isAdminUser ? 'admin' : 'user');
+        }}
+      />
+
       <WalletModal
         isOpen={walletOpen}
         onClose={() => setWalletOpen(false)}
@@ -75,10 +123,7 @@ function App() {
         sessionId={reportTarget.sessionId}
       />
 
-      <OnboardingModal
-        isOpen={authOpen}
-        onClose={() => setAuthOpen(false)}
-      />
+
 
       {/* ═══ TOAST NOTIFICATION SYSTEM ═══ */}
       <div className="fixed bottom-4 right-4 z-[60] space-y-2 pointer-events-none">
