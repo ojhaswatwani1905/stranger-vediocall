@@ -4,8 +4,9 @@ services:
     name: mediasoup-sfu-backend
     env: node
     rootDir: server
-    buildCommand: export MAKEFLAGS="-j1" && npm install && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
+
     plan: free
     region: singapore
 
