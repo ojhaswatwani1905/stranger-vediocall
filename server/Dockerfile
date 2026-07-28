@@ -1,5 +1,12 @@
 FROM node:20-slim AS builder
 
+# Install build dependencies required by mediasoup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy server package definitions
@@ -12,6 +19,11 @@ RUN npm run build
 
 FROM node:20-slim AS runner
 
+# Install runtime dependencies for mediasoup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
@@ -21,4 +33,5 @@ EXPOSE 3000
 EXPOSE 40000-49999/udp
 
 CMD ["node", "dist/server.js"]
+
 
