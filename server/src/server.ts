@@ -55,8 +55,14 @@ async function bootstrap() {
     },
   });
 
-  // Initialize Mediasoup Worker Pool
-  await workerManager.init();
+  // Initialize Mediasoup Worker Pool safely with fallback
+  try {
+    await workerManager.init();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[WorkerManager Warning]: Mediasoup native C++ binary not spawned:', msg);
+    console.warn('[Server]: Running Socket.IO WebRTC signaling server in direct P2P mode.');
+  }
 
   // Attach Signaling Handler
   setupSocketHandler(io);

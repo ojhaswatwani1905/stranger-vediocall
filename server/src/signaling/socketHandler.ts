@@ -10,10 +10,20 @@ export function setupSocketHandler(io: SocketIOServer): void {
     console.log(`[Socket.IO] Client connected: ${socket.id}`);
 
     /**
-     * Pass-through signaling relay for custom app events (chat, matching signals)
+     * Register socket with a custom PeerID room for P2P/WebRTC signaling routing
+     */
+    socket.on('register-peer', ({ peerId }) => {
+      if (peerId) {
+        console.log(`[Socket.IO] Socket ${socket.id} registered peerId room: ${peerId}`);
+        socket.join(peerId);
+      }
+    });
+
+    /**
+     * Pass-through signaling relay for WebRTC & chat app events
      */
     socket.on('signaling-event', ({ type, payload }) => {
-      console.log(`[Signaling Relay] Type: ${type} from ${socket.id}`, payload);
+      console.log(`[Signaling Relay] Type: ${type} from ${socket.id}`, payload?.targetPeerId || payload?.roomId || 'broadcast');
       if (payload && payload.targetPeerId) {
         socket.to(payload.targetPeerId).emit('signaling-event', { type, payload });
       } else if (payload && payload.roomId) {
@@ -56,7 +66,7 @@ export function setupSocketHandler(io: SocketIOServer): void {
 
         callback({
           success: true,
-          routerRtpCapabilities: room.router.rtpCapabilities,
+          routerRtpCapabilities: room ? room.router.rtpCapabilities : null,
           existingPeers: existingPeersData,
         });
       } catch (error: unknown) {
@@ -97,7 +107,7 @@ export function setupSocketHandler(io: SocketIOServer): void {
     socket.on('get-router-rtp-capabilities', async ({ roomId }, callback) => {
       try {
         const room = await roomManager.getOrCreateRoom(roomId);
-        callback({ success: true, routerRtpCapabilities: room.router.rtpCapabilities });
+        callback({ success: true, routerRtpCapabilities: room ? room.router.rtpCapabilities : null });
       } catch (error: unknown) {
         const errMessage = error instanceof Error ? error.message : 'Unknown error';
         callback({ success: false, error: errMessage });

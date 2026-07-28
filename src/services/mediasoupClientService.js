@@ -91,6 +91,11 @@ export class MediasoupClientService {
     // 1. Join room on signaling server
     const joinRes = await socketService.request('join-room', { roomId, displayName });
 
+    if (!joinRes || !joinRes.routerRtpCapabilities) {
+      console.warn('[MediasoupClient] Server operating without SFU router capabilities (Direct WebRTC P2P Active). Skipping SFU setup.');
+      return;
+    }
+
     // 2. Load device
     await this.loadDevice(joinRes.routerRtpCapabilities);
 

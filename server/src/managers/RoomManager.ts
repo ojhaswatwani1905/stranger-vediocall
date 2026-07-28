@@ -28,10 +28,15 @@ export class RoomManager {
   /**
    * Gets or creates a room with an assigned router from the worker pool.
    */
-  async getOrCreateRoom(roomId: string): Promise<Room> {
+  async getOrCreateRoom(roomId: string): Promise<Room | null> {
     let room = this.rooms.get(roomId);
     if (room) {
       return room;
+    }
+
+    if (!workerManager.hasWorkers()) {
+      console.warn(`[RoomManager] No active Mediasoup workers in pool. Room "${roomId}" operating in WebRTC P2P mode.`);
+      return null;
     }
 
     console.log(`[RoomManager] Creating new room "${roomId}"...`);

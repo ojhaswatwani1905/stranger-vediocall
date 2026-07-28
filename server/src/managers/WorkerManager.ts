@@ -52,6 +52,10 @@ export class WorkerManager {
     return worker;
   }
 
+  hasWorkers(): boolean {
+    return this.workers.length > 0;
+  }
+
   /**
    * Gets the next worker in round-robin sequence to distribute room routers.
    */

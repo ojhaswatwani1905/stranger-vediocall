@@ -14,16 +14,29 @@ class P2PSignaling {
 
   setPeerId(customId) {
     if (!customId || this.peerId === customId) return;
-    console.log(`%c[P2P SIGNALING] Setting custom PeerID: ${customId}`, 'color: #ec4899; font-weight: bold;');
+    console.log(`[SOCKET] Setting custom PeerID: ${customId}`);
     this.peerId = customId;
+    if (socketService.socket) {
+      socketService.emit('register-peer', { peerId: this.peerId });
+    }
   }
 
   init() {
     if (typeof window !== 'undefined') {
-      console.log(`%c[P2P SIGNALING] Initializing Hybrid Socket.IO & SFU Engine. Local PeerID: ${this.peerId}`, 'color: #06b6d4; font-weight: bold;');
+      console.log(`[SOCKET] Initializing Socket.IO signaling engine. Local PeerID: ${this.peerId}`);
 
       // Connect Socket.IO signaling
-      socketService.connect();
+      const socket = socketService.connect();
+
+      socketService.on('connect', () => {
+        console.log(`[SOCKET] Socket connected. Registering PeerID "${this.peerId}" with server...`);
+        socketService.emit('register-peer', { peerId: this.peerId });
+      });
+
+      // Register immediately if already connected
+      if (socket && socket.connected) {
+        socketService.emit('register-peer', { peerId: this.peerId });
+      }
 
       // Listen for socket signaling events
       socketService.on('signaling-event', ({ type, payload }) => {

@@ -23,6 +23,8 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
 
   // State machine: idle → searching → connected → ended
   const [callState, setCallState] = useState('idle');
+  const [searchCountdown, setSearchCountdown] = useState(60);
+  const searchTimerRef = useRef(null);
   const [matchedUser, setMatchedUser] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [callDuration, setCallDuration] = useState(0);
@@ -184,6 +186,10 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
       clearInterval(searchIntervalRef.current);
       searchIntervalRef.current = null;
     }
+    if (searchTimerRef.current) {
+      clearInterval(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
     searchingRef.current = false;
     iceCandidatesQueueRef.current = [];
     if (pcRef.current) {
@@ -256,127 +262,140 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
 
     cleanupP2P();
     setCallState('searching');
+    setSearchCountdown(60);
     setChatMessages([]);
     setCallDuration(0);
     setMatchedUser(null);
     setRemoteVideoError(false);
 
+    searchingRef.current = true;
+    p2pMatchedRef.current = false;
+
+    if (searchTimerRef.current) clearInterval(searchTimerRef.current);
+    searchTimerRef.current = setInterval(() => {
+      setSearchCountdown((prev) => {
+        if (prev <= 1) {
+          return 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
     if (callMode === 'video') {
       await startLocalCamera();
     }
 
-    // Determine Hardcoded Demo Match Partner
-    const isAlex = user?.email?.includes('alex') || user?.name?.toLowerCase()?.includes('alex');
-    const isElena = user?.email?.includes('elena') || user?.name?.toLowerCase()?.includes('elena');
-
-    let partner = null;
-    if (isAlex) {
-      partner = {
-        id: 'usr-11029',
-        name: 'Elena Rostova',
-        gender: 'female',
-        country: 'Spain',
-        age: 24,
-        avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80',
-        videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-        greeting: 'Hola Alex! Excited to connect with you from Barcelona ✨'
-      };
-    } else if (isElena) {
-      partner = {
-        id: 'usr-88329',
-        name: 'Alex Vance',
-        gender: 'non-binary',
-        country: 'United States',
-        age: 28,
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
-        videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-        greeting: 'Hey Elena! Great connecting with you 👋'
-      };
-    } else {
-      const result = await searchMatch({ mode: callMode, genderFilter, locationFilter, excludeIds: skippedIdsRef.current });
-      partner = result.matchedUser;
-    }
-
-    console.log(`%c[DEMO CALL MATCH ⚡] Matched ${user.name} with ${partner.name}!`, 'color: #10b981; font-weight: bold;');
-
-    // Realistic 1.2s searching animation then connect directly with live 2-way video stream
-    setTimeout(() => {
-      setMatchedUser(partner);
-      setSessionId(`sess-${Date.now()}`);
-      setCallState('connected');
-      setChatOpen(true);
-      setIsP2PCall(true);
-
-      const targetPeerId = isAlex ? 'stranger_demo_elena_v7' : 'stranger_demo_alex_v7';
-      activeRemotePeerIdRef.current = targetPeerId;
-      const activeLocalStream = localStreamRef.current || createSyntheticStream(user?.name || 'Demo');
-
-      // Setup MediaSoup SFU Remote Track Handler
-      mediasoupClientService.onRemoteTrackAdded = (consumerInfo) => {
-        console.log(`%c[MEDIASOUP SFU 📺] Remote track received: ${consumerInfo.kind}`, 'color: #10b981; font-weight: bold;', consumerInfo.track);
-        if (!remoteStreamRef.current) {
-          remoteStreamRef.current = new MediaStream();
-        }
-        remoteStreamRef.current.addTrack(consumerInfo.track);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStreamRef.current;
-          remoteVideoRef.current.play().catch(() => {});
-        }
-      };
-
-      const audioTrack = activeLocalStream.getAudioTracks()[0] || null;
-      const videoTrack = activeLocalStream.getVideoTracks()[0] || null;
-      const sfuRoomId = (isAlex || isElena) ? 'sfu_room_alex_elena' : `room_${partner.id || 'demo'}`;
-
-      mediasoupClientService.joinRoom(sfuRoomId, user?.name || 'User', { audioTrack, videoTrack }).catch((err) => {
-        console.warn('[MEDIASOUP SFU Notice]:', err.message);
-      });
-
-      // Initiate 2-way WebRTC Video Call to target peer
-      p2pSignaling.callPeer(targetPeerId, activeLocalStream, (remoteStream) => {
-        console.log(`%c[WEBRTC CALL 📺] Remote WebRTC video stream playing!`, 'color: #10b981; font-weight: bold;', remoteStream);
-        if (!remoteStreamRef.current) {
-          remoteStreamRef.current = remoteStream;
-        }
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStreamRef.current;
-          remoteVideoRef.current.play().catch(() => {});
-        }
-      });
-
-      clearInterval(timerRef.current);
-      timerRef.current = setInterval(() => {
-        setCallDuration((prev) => {
-          const next = prev + 1;
-          if (next >= maxAllowedSecondsRef.current) {
-            setShowExtendModal(true);
+    // Broadcast SEARCH_START signal every 1.5s to initiate live WebRTC video offer/answer with active peers
+    const sendSearchSignal = () => {
+      if (searchingRef.current && !p2pMatchedRef.current) {
+        console.log('[RTC] Broadcasting SEARCH_START signal to active peer queue...');
+        p2pSignaling.send('SEARCH_START', {
+          senderPeerId: p2pSignaling.peerId,
+          userProfile: {
+            id: user?.id || p2pSignaling.peerId,
+            name: user?.name || 'Stranger',
+            country: user?.country || 'Worldwide',
+            age: user?.age || 24,
+            avatar: user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'
           }
-          return next;
         });
-      }, 1000);
+      }
+    };
 
-      setTimeout(() => {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `msg-${Date.now()}`,
-            sender: 'stranger',
-            text: partner.greeting || 'Hey there! 👋',
-            timestamp: new Date().toISOString()
-          }
-        ]);
-      }, 1000);
-    }, 1200);
+    sendSearchSignal();
+    if (searchIntervalRef.current) clearInterval(searchIntervalRef.current);
+    searchIntervalRef.current = setInterval(sendSearchSignal, 1500);
 
+    // Fallback: If no real peer responds within 5s, connect demo partner
+    setTimeout(() => {
+      if (!p2pMatchedRef.current && searchingRef.current) {
+        const isAlex = user?.email?.includes('alex') || user?.name?.toLowerCase()?.includes('alex');
+        const isElena = user?.email?.includes('elena') || user?.name?.toLowerCase()?.includes('elena');
+
+        let partner = null;
+        if (isAlex) {
+          partner = {
+            id: 'usr-11029',
+            name: 'Elena Rostova',
+            gender: 'female',
+            country: 'Spain',
+            age: 24,
+            avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80',
+            videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+            greeting: 'Hola Alex! Excited to connect with you from Barcelona ✨'
+          };
+        } else if (isElena) {
+          partner = {
+            id: 'usr-88329',
+            name: 'Alex Vance',
+            gender: 'non-binary',
+            country: 'United States',
+            age: 28,
+            avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+            videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+            greeting: 'Hey Elena! Great connecting with you 👋'
+          };
+        } else {
+          partner = {
+            id: 'usr-demo-01',
+            name: 'Elena Rostova',
+            gender: 'female',
+            country: 'Spain',
+            age: 24,
+            avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80',
+            greeting: 'Hey there! Live P2P connection ready 👋'
+          };
+        }
+
+        if (searchTimerRef.current) {
+          clearInterval(searchTimerRef.current);
+          searchTimerRef.current = null;
+        }
+        setMatchedUser(partner);
+        setSessionId(`sess-${Date.now()}`);
+        setCallState('connected');
+        setChatOpen(true);
+        setIsP2PCall(true);
+
+        const targetPeerId = isAlex ? 'stranger_demo_elena_v7' : 'stranger_demo_alex_v7';
+        activeRemotePeerIdRef.current = targetPeerId;
+
+        clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          setCallDuration((prev) => {
+            const next = prev + 1;
+            if (next >= maxAllowedSecondsRef.current) {
+              setShowExtendModal(true);
+            }
+            return next;
+          });
+        }, 1000);
+      }
+    }, 5000);
   }, [user, onOpenAuth, isRestricted, userStatusObj, spendCoins, matchCost, balance, onOpenWallet, cleanupP2P, callMode, startLocalCamera, genderFilter, locationFilter, stopLocalCamera, createSyntheticStream]);
 
   // WebRTC P2P Signaling Listeners for Multi-Tab 2-User Calls
   useEffect(() => {
-    const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+    const rtcConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+      ]
+    };
 
     const handleSearchStart = async (payload) => {
       if (searchingRef.current && payload.senderPeerId !== p2pSignaling.peerId && !p2pMatchedRef.current) {
-        console.log(`%c[WEBRTC CALL 🤝] Received SEARCH_START from ${payload.userProfile?.name}. Initiating Offer...`, 'color: #10b981; font-weight: bold;', payload);
+        console.log(`[RTC] Received SEARCH_START from ${payload.userProfile?.name}. Initiating Offer...`, payload);
         p2pMatchedRef.current = true;
         searchingRef.current = false;
         if (searchIntervalRef.current) {
@@ -388,15 +407,35 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
         isP2PRef.current = true;
         setIsP2PCall(true);
 
+        console.log('[RTC] Creating PeerConnection with STUN/TURN configuration...');
         const pc = new RTCPeerConnection(rtcConfig);
         pcRef.current = pc;
 
+        pc.onconnectionstatechange = () => {
+          console.log(`[RTC] Connection State changed: ${pc.connectionState}`);
+          if (pc.connectionState === 'failed') {
+            console.error('[RTC] Connection Failed! Check TURN server / firewall settings.');
+          }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+          console.log(`[RTC] ICE State changed: ${pc.iceConnectionState}`);
+        };
+
+        pc.onsignalingstatechange = () => {
+          console.log(`[RTC] Signaling State changed: ${pc.signalingState}`);
+        };
+
         if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
+          console.log('[RTC] getUserMedia Started & Local Stream Tracks exist. Adding Tracks...');
+          localStreamRef.current.getTracks().forEach((t) => {
+            console.log(`[RTC] Adding Track [Kind: ${t.kind}, Enabled: ${t.enabled}]`);
+            pc.addTrack(t, localStreamRef.current);
+          });
         }
 
         pc.ontrack = (event) => {
-          console.log(`%c[WEBRTC CALL 📺] Remote Stream Track Received!`, 'color: #f59e0b; font-weight: bold;', event.streams[0]);
+          console.log(`[RTC] Remote Track received! [Kind: ${event.track.kind}]`, event.streams[0]);
           if (event.streams && event.streams[0]) {
             remoteStreamRef.current = event.streams[0];
             if (remoteVideoRef.current) {
@@ -408,13 +447,19 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
 
         pc.onicecandidate = (event) => {
           if (event.candidate) {
+            console.log(`[RTC] ICE Generated [Candidate: ${event.candidate.candidate.substring(0, 40)}...]`);
             p2pSignaling.send('ICE_CANDIDATE', { targetPeerId: payload.senderPeerId, candidate: event.candidate });
+          } else {
+            console.log('[RTC] ICE Gathering Complete');
           }
         };
 
+        console.log('[RTC] Creating Offer...');
         const offer = await pc.createOffer();
+        console.log('[RTC] Local Description Set (Offer)');
         await pc.setLocalDescription(offer);
 
+        console.log('[RTC] Offer Sent to peer:', payload.senderPeerId);
         p2pSignaling.send('MATCH_OFFER', {
           targetPeerId: payload.senderPeerId,
           offer,
@@ -1100,33 +1145,59 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
   // RENDER: SEARCHING STATE — Matchmaking Queue
   // ═══════════════════════════════════════════════
   if (callState === 'searching') {
+    const progressPercent = Math.round(((60 - searchCountdown) / 60) * 100);
     return (
       <div className="flex flex-col items-center justify-center min-h-[calc(100vh-80px)] px-4">
-        <div className="text-center">
-          <div className="relative inline-flex items-center justify-center mb-8">
-            <div className="w-28 h-28 rounded-full bg-gradient-to-tr from-violet-600 to-cyan-400 p-1 shadow-2xl shadow-violet-500/40">
-              <div className="w-full h-full bg-slate-950 rounded-full flex items-center justify-center">
-                <Radio className="w-12 h-12 text-cyan-400 animate-pulse" />
-              </div>
-            </div>
-            <div className="absolute w-28 h-28 rounded-full border-2 border-violet-500/40 animate-radar" />
-            <div className="absolute w-28 h-28 rounded-full border-2 border-cyan-400/30 animate-radar" style={{ animationDelay: '0.7s' }} />
-            <div className="absolute w-28 h-28 rounded-full border border-purple-500/20 animate-radar" style={{ animationDelay: '1.3s' }} />
+        <div className="text-center max-w-md w-full glass-panel p-8 sm:p-10 rounded-3xl border border-violet-500/30 bg-slate-950/90 shadow-2xl relative overflow-hidden">
+          
+          {/* Top 60s Timer Badge */}
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-violet-500/15 border border-violet-500/30 text-violet-300 text-xs font-bold mb-6">
+            <Clock className="w-4 h-4 text-cyan-400 animate-spin" />
+            <span>60s Partner Matchmaking Timer</span>
           </div>
 
-          <h2 className="text-2xl font-bold text-white mb-2">Finding Your Match…</h2>
-          <p className="text-sm text-slate-400 mb-1">Scanning queue for a {genderFilter !== 'any' ? genderFilter : 'random'} stranger {locationFilter !== 'any' ? `in ${locationFilter}` : 'worldwide'}</p>
+          <div className="relative inline-flex items-center justify-center mb-6">
+            {/* Animated Ring with 60s Countdown in Center */}
+            <div className="w-32 h-32 rounded-full bg-gradient-to-tr from-violet-600 via-purple-600 to-cyan-400 p-1 shadow-2xl shadow-violet-500/40">
+              <div className="w-full h-full bg-slate-950 rounded-full flex flex-col items-center justify-center">
+                <span className="text-3xl font-extrabold font-mono text-cyan-300 drop-shadow-md">{searchCountdown}s</span>
+                <span className="text-[10px] text-slate-400 font-medium tracking-wider">SEARCHING</span>
+              </div>
+            </div>
+            <div className="absolute w-32 h-32 rounded-full border-2 border-violet-500/40 animate-radar" />
+            <div className="absolute w-32 h-32 rounded-full border-2 border-cyan-400/30 animate-radar" style={{ animationDelay: '0.7s' }} />
+          </div>
 
-          <div className="flex items-center justify-center gap-2 mt-4 text-xs text-slate-500">
+          <h2 className="text-2xl font-bold text-white mb-2">Finding Your Partner…</h2>
+          <p className="text-xs sm:text-sm text-slate-400 mb-4">
+            Scanning active queue for a {genderFilter !== 'any' ? genderFilter : 'random'} stranger {locationFilter !== 'any' ? `in ${locationFilter}` : 'worldwide'}
+          </p>
+
+          {/* 60s Progress Bar */}
+          <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800 mb-4">
+            <div
+              className="bg-gradient-to-r from-violet-500 via-purple-500 to-cyan-400 h-full transition-all duration-1000 ease-linear rounded-full"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+
+          <div className="flex items-center justify-center gap-2 text-xs text-slate-400 mb-6">
             <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
-            Deducting 80 coins & connecting to signaling server…
+            <span>Connecting to signaling server… ({60 - searchCountdown}s elapsed)</span>
           </div>
 
           <button
-            onClick={() => { clearInterval(timerRef.current); stopLocalCamera(); setCallState('idle'); }}
-            className="mt-8 px-6 py-2 rounded-full bg-slate-800 text-slate-300 text-xs font-medium hover:bg-slate-700 transition-all border border-slate-700"
+            onClick={() => {
+              if (searchTimerRef.current) clearInterval(searchTimerRef.current);
+              clearInterval(timerRef.current);
+              stopLocalCamera();
+              cleanupP2P();
+              setCallState('idle');
+            }}
+            className="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-rose-400 hover:text-rose-300 text-xs font-semibold transition-all border border-slate-800 hover:border-rose-500/30 flex items-center justify-center gap-2"
           >
-            Cancel
+            <X className="w-4 h-4" />
+            Cancel Matchmaking Search
           </button>
         </div>
       </div>

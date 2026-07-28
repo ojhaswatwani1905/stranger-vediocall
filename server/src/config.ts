@@ -63,7 +63,7 @@ export const config = {
     sslCrt: path.resolve(__dirname, '../ssl/server.crt'),
   },
   mediasoup: {
-    numWorkers: parseInt(process.env.MEDIASOUP_NUM_WORKERS || '0', 10) || Object.keys(os.cpus()).length,
+    numWorkers: parseInt(process.env.MEDIASOUP_NUM_WORKERS || '0', 10) || Math.min(Object.keys(os.cpus()).length || 2, 2),
     workerSettings: {
       logLevel: (process.env.MEDIASOUP_LOG_LEVEL || 'warn') as WorkerLogLevel,
       logTags: [
