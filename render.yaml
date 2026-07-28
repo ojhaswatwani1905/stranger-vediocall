@@ -10,8 +10,11 @@ services:
     region: singapore
 
     envVars:
+      - key: NODE_VERSION
+        value: "20.12.2"
       - key: MAKEFLAGS
         value: "-j1"
+
       - key: PORT
         value: 3000
       - key: LISTEN_IP
