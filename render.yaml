@@ -4,12 +4,14 @@ services:
     name: mediasoup-sfu-backend
     env: node
     rootDir: server
-    buildCommand: npm install && npm run build
+    buildCommand: export MAKEFLAGS="-j1" && npm install && npm run build
     startCommand: npm start
     plan: free
     region: singapore
 
     envVars:
+      - key: MAKEFLAGS
+        value: "-j1"
       - key: PORT
         value: 3000
       - key: LISTEN_IP
