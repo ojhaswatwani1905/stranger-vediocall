@@ -5,13 +5,15 @@ import {
   Loader2, Radio, Globe, Users, Sparkles, LayoutGrid, Columns, Volume2
 } from 'lucide-react';
 import { searchMatch } from '../../services/matchmakingService';
+import { p2pSignaling } from '../../services/p2pSignaling';
+import { mediasoupClientService } from '../../services/mediasoupClientService';
 import { useModeration } from '../../context/ModerationContext';
 import { useWallet } from '../../context/WalletContext';
 import { useAuth } from '../../context/AuthContext';
 
 export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAuth }) => {
   const { filterTextMessage, isUserRestricted, usersList } = useModeration();
-  const { spendCoins, balance, FILTER_PRICES, filterPrices } = useWallet();
+  const { spendCoins, deductCoins, balance, FILTER_PRICES, filterPrices } = useWallet();
   const { user } = useAuth();
 
   const matchCost = (filterPrices && filterPrices.match) || (FILTER_PRICES && FILTER_PRICES.match) || 80;
@@ -24,6 +26,33 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
   const [matchedUser, setMatchedUser] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [callDuration, setCallDuration] = useState(0);
+  const [maxAllowedSeconds, setMaxAllowedSeconds] = useState(120);
+  const maxAllowedSecondsRef = useRef(120);
+  const [showExtendModal, setShowExtendModal] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
+
+  const triggerToast = (msg, type = 'info') => {
+    setToastMessage({ text: msg, type });
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleExtendCall = (addSeconds, coinCost, label) => {
+    const res = deductCoins
+      ? deductCoins(coinCost, `Extended Call (${label})`)
+      : spendCoins('extendCall', `Extended Call (${label})`);
+
+    if (res && res.success) {
+      const newMax = maxAllowedSecondsRef.current + addSeconds;
+      maxAllowedSecondsRef.current = newMax;
+      setMaxAllowedSeconds(newMax);
+      setShowExtendModal(false);
+      triggerToast(`🎉 Call Extended by +${addSeconds >= 3600 ? 'Unlimited' : Math.round(addSeconds / 60) + ' min'}!`);
+    } else {
+      triggerToast(`⚠️ Insufficient Coins! You need ${coinCost} coins.`, 'error');
+      onOpenWallet();
+    }
+  };
+
   const [callMode, setCallMode] = useState('video'); // video | text
   const [layoutMode, setLayoutMode] = useState('pip'); // 'pip' (big center Other's Cam + small floating Your Cam) | 'split'
   const [remoteVideoError, setRemoteVideoError] = useState(false);
@@ -44,6 +73,17 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
   const [ageRange, setAgeRange] = useState('any');
   const [verifiedOnly, setVerifiedOnly] = useState(false);
 
+  // P2P WebRTC Multi-tab state
+  const [isP2PCall, setIsP2PCall] = useState(false);
+  const pcRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const iceCandidatesQueueRef = useRef([]);
+  const activeRemotePeerIdRef = useRef(null);
+  const isP2PRef = useRef(false);
+  const p2pMatchedRef = useRef(false);
+  const searchingRef = useRef(false);
+  const searchIntervalRef = useRef(null);
+
   // Refs
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -54,6 +94,110 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
   const skippedIdsRef = useRef([]);
 
   const [hasCamStream, setHasCamStream] = useState(false);
+
+  // Buffer ICE candidates until remote description is set
+  const addIceCandidateOrQueue = async (candidate) => {
+    if (!candidate) return;
+    if (pcRef.current && pcRef.current.remoteDescription && pcRef.current.remoteDescription.type) {
+      try {
+        await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {}
+    } else {
+      iceCandidatesQueueRef.current.push(candidate);
+    }
+  };
+
+  const processIceQueue = async () => {
+    if (!pcRef.current || !pcRef.current.remoteDescription) return;
+    while (iceCandidatesQueueRef.current.length > 0) {
+      const candidate = iceCandidatesQueueRef.current.shift();
+      try {
+        await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {}
+    }
+  };
+
+  // Synthetic Media Stream (Canvas + Silent Audio) fallback if camera is blocked/denied
+  const createSyntheticStream = useCallback((name = 'Demo User') => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext('2d');
+
+    let step = 0;
+    const draw = () => {
+      step += 0.05;
+      const grad = ctx.createLinearGradient(0, 0, 640, 480);
+      grad.addColorStop(0, '#0f172a');
+      grad.addColorStop(1, '#1e1b4b');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 640, 480);
+
+      ctx.beginPath();
+      ctx.arc(320, 240, 85 + Math.sin(step) * 12, 0, Math.PI * 2);
+      ctx.strokeStyle = '#818cf8';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(name, 320, 230);
+
+      ctx.fillStyle = '#a7f3d0';
+      ctx.font = '16px sans-serif';
+      ctx.fillText('🟢 Live P2P Stream', 320, 270);
+    };
+
+    const interval = setInterval(draw, 50);
+    const canvasStream = canvas.captureStream(30);
+
+    try {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ac.createOscillator();
+      const dest = ac.createMediaStreamDestination();
+      const gain = ac.createGain();
+      gain.gain.value = 0.001;
+      osc.connect(gain);
+      gain.connect(dest);
+      osc.start();
+
+      const audioTrack = dest.stream.getAudioTracks()[0];
+      if (audioTrack) {
+        canvasStream.addTrack(audioTrack);
+      }
+    } catch (e) {}
+
+    canvasStream._stopSynthetic = () => {
+      clearInterval(interval);
+    };
+
+    return canvasStream;
+  }, []);
+
+  // Cleanup P2P & MediaSoup WebRTC Connection
+  const cleanupP2P = useCallback(() => {
+    try {
+      mediasoupClientService.leave();
+    } catch (e) {}
+    if (searchIntervalRef.current) {
+      clearInterval(searchIntervalRef.current);
+      searchIntervalRef.current = null;
+    }
+    searchingRef.current = false;
+    iceCandidatesQueueRef.current = [];
+    if (pcRef.current) {
+      try {
+        pcRef.current.close();
+      } catch (e) {}
+      pcRef.current = null;
+    }
+    remoteStreamRef.current = null;
+    activeRemotePeerIdRef.current = null;
+    isP2PRef.current = false;
+    p2pMatchedRef.current = false;
+    setIsP2PCall(false);
+  }, []);
 
   // Start user's camera
   const startLocalCamera = useCallback(async () => {
@@ -66,24 +210,33 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
       setHasCamStream(true);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
       }
     } catch (err) {
-      console.warn('Camera access denied or unattached, using avatar preview:', err.message);
-      setHasCamStream(false);
+      console.warn('Camera unavailable, creating synthetic stream:', err.message);
+      const synthStream = createSyntheticStream(user?.name || 'Demo User');
+      localStreamRef.current = synthStream;
+      setHasCamStream(true);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = synthStream;
+        localVideoRef.current.play().catch(() => {});
+      }
     }
-  }, []);
+  }, [user, createSyntheticStream]);
 
   // Cleanup camera
   const stopLocalCamera = useCallback(() => {
     if (localStreamRef.current) {
+      if (localStreamRef.current._stopSynthetic) {
+        localStreamRef.current._stopSynthetic();
+      }
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
   }, []);
 
-  // Search for a match
+  // Search for a match (Hardcoded Alex ↔ Elena Demo Pairing)
   const startSearch = useCallback(async () => {
-    // Must be authenticated to start match
     if (!user) {
       if (onOpenAuth) onOpenAuth();
       return;
@@ -94,7 +247,6 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
       return;
     }
 
-    // Check coin balance (configured by admin)
     const resultCoins = spendCoins('match', `Started 1:1 Stranger Call (${matchCost} coins)`);
     if (!resultCoins.success) {
       alert(`Insufficient Coins! Each stranger match costs ${matchCost} coins. You currently have ${balance} coins.`);
@@ -102,77 +254,416 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
       return;
     }
 
+    cleanupP2P();
     setCallState('searching');
     setChatMessages([]);
     setCallDuration(0);
     setMatchedUser(null);
+    setRemoteVideoError(false);
 
     if (callMode === 'video') {
       await startLocalCamera();
     }
 
-    const result = await searchMatch({
-      mode: callMode,
-      genderFilter,
-      locationFilter,
-      excludeIds: skippedIdsRef.current
-    });
+    // Determine Hardcoded Demo Match Partner
+    const isAlex = user?.email?.includes('alex') || user?.name?.toLowerCase()?.includes('alex');
+    const isElena = user?.email?.includes('elena') || user?.name?.toLowerCase()?.includes('elena');
 
-    setMatchedUser(result.matchedUser);
-    setRemoteVideoError(false);
-    setSessionId(result.sessionId);
-    setCallState('connected');
-    setChatOpen(true);
+    let partner = null;
+    if (isAlex) {
+      partner = {
+        id: 'usr-11029',
+        name: 'Elena Rostova',
+        gender: 'female',
+        country: 'Spain',
+        age: 24,
+        avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80',
+        videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+        greeting: 'Hola Alex! Excited to connect with you from Barcelona ✨'
+      };
+    } else if (isElena) {
+      partner = {
+        id: 'usr-88329',
+        name: 'Alex Vance',
+        gender: 'non-binary',
+        country: 'United States',
+        age: 28,
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+        videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+        greeting: 'Hey Elena! Great connecting with you 👋'
+      };
+    } else {
+      const result = await searchMatch({ mode: callMode, genderFilter, locationFilter, excludeIds: skippedIdsRef.current });
+      partner = result.matchedUser;
+    }
 
-    // Start 2-minute max call timer (120 seconds cutoff)
-    timerRef.current = setInterval(() => {
-      setCallDuration((prev) => {
-        if (prev >= 119) {
-          clearInterval(timerRef.current);
-          stopLocalCamera();
-          setCallState('ended');
-          return 120;
-        }
-        return prev + 1;
-      });
-    }, 1000);
+    console.log(`%c[DEMO CALL MATCH ⚡] Matched ${user.name} with ${partner.name}!`, 'color: #10b981; font-weight: bold;');
 
-    // Auto-greeting from stranger
+    // Realistic 1.2s searching animation then connect directly with live 2-way video stream
     setTimeout(() => {
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-${Date.now()}`,
-          sender: 'stranger',
-          text: result.matchedUser.greeting || 'Hey there! 👋',
-          timestamp: new Date().toISOString()
+      setMatchedUser(partner);
+      setSessionId(`sess-${Date.now()}`);
+      setCallState('connected');
+      setChatOpen(true);
+      setIsP2PCall(true);
+
+      const targetPeerId = isAlex ? 'stranger_demo_elena_v7' : 'stranger_demo_alex_v7';
+      activeRemotePeerIdRef.current = targetPeerId;
+      const activeLocalStream = localStreamRef.current || createSyntheticStream(user?.name || 'Demo');
+
+      // Setup MediaSoup SFU Remote Track Handler
+      mediasoupClientService.onRemoteTrackAdded = (consumerInfo) => {
+        console.log(`%c[MEDIASOUP SFU 📺] Remote track received: ${consumerInfo.kind}`, 'color: #10b981; font-weight: bold;', consumerInfo.track);
+        if (!remoteStreamRef.current) {
+          remoteStreamRef.current = new MediaStream();
         }
-      ]);
-    }, 1500 + Math.random() * 2000);
-  }, [user, onOpenAuth, callMode, genderFilter, locationFilter, startLocalCamera, spendCoins, balance, onOpenWallet, stopLocalCamera]);
+        remoteStreamRef.current.addTrack(consumerInfo.track);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(() => {});
+        }
+      };
+
+      const audioTrack = activeLocalStream.getAudioTracks()[0] || null;
+      const videoTrack = activeLocalStream.getVideoTracks()[0] || null;
+      const sfuRoomId = (isAlex || isElena) ? 'sfu_room_alex_elena' : `room_${partner.id || 'demo'}`;
+
+      mediasoupClientService.joinRoom(sfuRoomId, user?.name || 'User', { audioTrack, videoTrack }).catch((err) => {
+        console.warn('[MEDIASOUP SFU Notice]:', err.message);
+      });
+
+      // Initiate 2-way WebRTC Video Call to target peer
+      p2pSignaling.callPeer(targetPeerId, activeLocalStream, (remoteStream) => {
+        console.log(`%c[WEBRTC CALL 📺] Remote WebRTC video stream playing!`, 'color: #10b981; font-weight: bold;', remoteStream);
+        if (!remoteStreamRef.current) {
+          remoteStreamRef.current = remoteStream;
+        }
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(() => {});
+        }
+      });
+
+      clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setCallDuration((prev) => {
+          const next = prev + 1;
+          if (next >= maxAllowedSecondsRef.current) {
+            setShowExtendModal(true);
+          }
+          return next;
+        });
+      }, 1000);
+
+      setTimeout(() => {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: `msg-${Date.now()}`,
+            sender: 'stranger',
+            text: partner.greeting || 'Hey there! 👋',
+            timestamp: new Date().toISOString()
+          }
+        ]);
+      }, 1000);
+    }, 1200);
+
+  }, [user, onOpenAuth, isRestricted, userStatusObj, spendCoins, matchCost, balance, onOpenWallet, cleanupP2P, callMode, startLocalCamera, genderFilter, locationFilter, stopLocalCamera, createSyntheticStream]);
+
+  // WebRTC P2P Signaling Listeners for Multi-Tab 2-User Calls
+  useEffect(() => {
+    const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+    const handleSearchStart = async (payload) => {
+      if (searchingRef.current && payload.senderPeerId !== p2pSignaling.peerId && !p2pMatchedRef.current) {
+        console.log(`%c[WEBRTC CALL 🤝] Received SEARCH_START from ${payload.userProfile?.name}. Initiating Offer...`, 'color: #10b981; font-weight: bold;', payload);
+        p2pMatchedRef.current = true;
+        searchingRef.current = false;
+        if (searchIntervalRef.current) {
+          clearInterval(searchIntervalRef.current);
+          searchIntervalRef.current = null;
+        }
+
+        activeRemotePeerIdRef.current = payload.senderPeerId;
+        isP2PRef.current = true;
+        setIsP2PCall(true);
+
+        const pc = new RTCPeerConnection(rtcConfig);
+        pcRef.current = pc;
+
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
+        }
+
+        pc.ontrack = (event) => {
+          console.log(`%c[WEBRTC CALL 📺] Remote Stream Track Received!`, 'color: #f59e0b; font-weight: bold;', event.streams[0]);
+          if (event.streams && event.streams[0]) {
+            remoteStreamRef.current = event.streams[0];
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = event.streams[0];
+              remoteVideoRef.current.play().catch(() => {});
+            }
+          }
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            p2pSignaling.send('ICE_CANDIDATE', { targetPeerId: payload.senderPeerId, candidate: event.candidate });
+          }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        p2pSignaling.send('MATCH_OFFER', {
+          targetPeerId: payload.senderPeerId,
+          offer,
+          userProfile: {
+            id: user?.id || p2pSignaling.peerId,
+            name: user?.name || 'Alex Vance',
+            country: user?.country || 'United States',
+            age: user?.age || 28,
+            avatar: user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'
+          }
+        });
+
+        setMatchedUser({
+          id: payload.senderPeerId,
+          name: payload.userProfile?.name || 'Live Peer',
+          country: payload.userProfile?.country || 'Live Multi-Tab Peer',
+          age: payload.userProfile?.age || 24,
+          avatar: payload.userProfile?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
+          greeting: `Connected live with ${payload.userProfile?.name || 'Stranger'}! 👋`
+        });
+        setSessionId(`p2p-${Date.now()}`);
+        setCallState('connected');
+        setChatOpen(true);
+
+        // MediaSoup SFU Join for Live Multi-Device Call
+        const activeLocalStream = localStreamRef.current || createSyntheticStream(user?.name || 'Live Peer');
+        const audioTrack = activeLocalStream.getAudioTracks()[0] || null;
+        const videoTrack = activeLocalStream.getVideoTracks()[0] || null;
+        const sfuRoomId = `sfu_room_${payload.senderPeerId}_${p2pSignaling.peerId}`;
+
+        mediasoupClientService.onRemoteTrackAdded = (consumerInfo) => {
+          console.log(`%c[MEDIASOUP SFU 📺] Remote track received: ${consumerInfo.kind}`, 'color: #10b981; font-weight: bold;', consumerInfo.track);
+          if (!remoteStreamRef.current) {
+            remoteStreamRef.current = new MediaStream();
+          }
+          remoteStreamRef.current.addTrack(consumerInfo.track);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = remoteStreamRef.current;
+            remoteVideoRef.current.play().catch(() => {});
+          }
+        };
+
+        mediasoupClientService.joinRoom(sfuRoomId, user?.name || 'User', { audioTrack, videoTrack }).catch((err) => {
+          console.warn('[MEDIASOUP SFU Notice]:', err.message);
+        });
+
+        clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          setCallDuration((prev) => {
+            const next = prev + 1;
+            if (next >= maxAllowedSecondsRef.current) {
+              setShowExtendModal(true);
+            }
+            return next;
+          });
+        }, 1000);
+      }
+    };
+
+    const handleMatchOffer = async (payload) => {
+      if (payload.targetPeerId === p2pSignaling.peerId && !p2pMatchedRef.current) {
+        console.log(`%c[WEBRTC CALL 📥] Received MATCH_OFFER from ${payload.userProfile?.name}. Creating Answer...`, 'color: #8b5cf6; font-weight: bold;', payload);
+        p2pMatchedRef.current = true;
+        searchingRef.current = false;
+        if (searchIntervalRef.current) {
+          clearInterval(searchIntervalRef.current);
+          searchIntervalRef.current = null;
+        }
+
+        activeRemotePeerIdRef.current = payload.senderPeerId;
+        isP2PRef.current = true;
+        setIsP2PCall(true);
+
+        const pc = new RTCPeerConnection(rtcConfig);
+        pcRef.current = pc;
+
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
+        }
+
+        pc.ontrack = (event) => {
+          console.log(`%c[WEBRTC CALL 📺] Remote Stream Track Received!`, 'color: #f59e0b; font-weight: bold;', event.streams[0]);
+          if (event.streams && event.streams[0]) {
+            remoteStreamRef.current = event.streams[0];
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = event.streams[0];
+              remoteVideoRef.current.play().catch(() => {});
+            }
+          }
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            p2pSignaling.send('ICE_CANDIDATE', { targetPeerId: payload.senderPeerId, candidate: event.candidate });
+          }
+        };
+
+        await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
+        await processIceQueue();
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        p2pSignaling.send('MATCH_ANSWER', { targetPeerId: payload.senderPeerId, answer });
+
+        setMatchedUser({
+          id: payload.senderPeerId,
+          name: payload.userProfile?.name || 'Live Peer',
+          country: payload.userProfile?.country || 'Live Multi-Tab Peer',
+          age: payload.userProfile?.age || 24,
+          avatar: payload.userProfile?.avatar || 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
+          greeting: `Connected live with ${payload.userProfile?.name || 'Stranger'}! 👋`
+        });
+        setSessionId(`p2p-${Date.now()}`);
+        setCallState('connected');
+        setChatOpen(true);
+
+        // MediaSoup SFU Join for Answerer
+        const activeLocalStream = localStreamRef.current || createSyntheticStream(user?.name || 'Live Peer');
+        const audioTrack = activeLocalStream.getAudioTracks()[0] || null;
+        const videoTrack = activeLocalStream.getVideoTracks()[0] || null;
+        const sfuRoomId = `sfu_room_${payload.senderPeerId}_${p2pSignaling.peerId}`;
+
+        mediasoupClientService.onRemoteTrackAdded = (consumerInfo) => {
+          console.log(`%c[MEDIASOUP SFU 📺] Remote track received: ${consumerInfo.kind}`, 'color: #10b981; font-weight: bold;', consumerInfo.track);
+          if (!remoteStreamRef.current) {
+            remoteStreamRef.current = new MediaStream();
+          }
+          remoteStreamRef.current.addTrack(consumerInfo.track);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = remoteStreamRef.current;
+            remoteVideoRef.current.play().catch(() => {});
+          }
+        };
+
+        mediasoupClientService.joinRoom(sfuRoomId, user?.name || 'User', { audioTrack, videoTrack }).catch((err) => {
+          console.warn('[MEDIASOUP SFU Notice]:', err.message);
+        });
+
+        clearInterval(timerRef.current);
+        timerRef.current = setInterval(() => {
+          setCallDuration((prev) => {
+            const next = prev + 1;
+            if (next >= maxAllowedSecondsRef.current) {
+              setShowExtendModal(true);
+            }
+            return next;
+          });
+        }, 1000);
+      }
+    };
+
+    const handleMatchAnswer = async (payload) => {
+      if (payload.targetPeerId === p2pSignaling.peerId && pcRef.current) {
+        console.log(`%c[WEBRTC CALL 🎉] Received MATCH_ANSWER! Connection ESTABLISHED!`, 'color: #06b6d4; font-weight: bold;', payload);
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
+        await processIceQueue();
+      }
+    };
+
+    const handleIceCandidate = async (payload) => {
+      if (payload.targetPeerId === p2pSignaling.peerId && payload.candidate) {
+        await addIceCandidateOrQueue(payload.candidate);
+      }
+    };
+
+    const handleP2PChat = (payload) => {
+      console.log(`%c[P2P CHAT 📥 RECEIVED via P2P Engine] From: ${payload.senderName || 'Stranger'} | Message: "${payload.text}"`, 'color: #10b981; font-weight: bold; font-size: 13px;', payload);
+      if (payload.senderName !== user?.name) {
+        setChatMessages((prev) => {
+          const isDuplicate = prev.some(
+            (m) => m.sender === 'stranger' && m.text === payload.text && Math.abs(new Date(m.timestamp).getTime() - Date.now()) < 3000
+          );
+          if (isDuplicate) return prev;
+          return [
+            ...prev,
+            {
+              id: payload.msgId || `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+              sender: 'stranger',
+              text: payload.text,
+              timestamp: new Date().toISOString()
+            }
+          ];
+        });
+      }
+    };
+
+    const handleEndCall = (payload) => {
+      console.log(`%c[WEBRTC CALL 🛑] Received END_CALL event from ${payload.senderName || 'peer'}`, 'color: #ef4444; font-weight: bold;', payload);
+      cleanupP2P();
+      clearInterval(timerRef.current);
+      stopLocalCamera();
+      setCallState('ended');
+      setCallDuration(0);
+    };
+
+    const unSubSearch = p2pSignaling.on('SEARCH_START', handleSearchStart);
+    const unSubOffer = p2pSignaling.on('MATCH_OFFER', handleMatchOffer);
+    const unSubAnswer = p2pSignaling.on('MATCH_ANSWER', handleMatchAnswer);
+    const unSubIce = p2pSignaling.on('ICE_CANDIDATE', handleIceCandidate);
+    const unSubChat = p2pSignaling.on('P2P_CHAT', handleP2PChat);
+    const unSubEnd = p2pSignaling.on('END_CALL', handleEndCall);
+
+    return () => {
+      unSubSearch();
+      unSubOffer();
+      unSubAnswer();
+      unSubIce();
+      unSubChat();
+      unSubEnd();
+    };
+  }, [user, cleanupP2P, stopLocalCamera]);
 
   // End current call
   const endCall = useCallback(() => {
+    const targetPeerId = activeRemotePeerIdRef.current || (user?.email?.includes('alex') ? 'stranger_demo_elena_v7' : 'stranger_demo_alex_v7');
+    console.log(`%c[WEBRTC CALL 🛑] Sending END_CALL to ${targetPeerId}`, 'color: #ef4444; font-weight: bold;');
+    p2pSignaling.send('END_CALL', { targetPeerId, senderName: user?.name });
+    cleanupP2P();
     clearInterval(timerRef.current);
     stopLocalCamera();
     setCallState('ended');
     setCallDuration(0);
-  }, [stopLocalCamera]);
+    maxAllowedSecondsRef.current = 120;
+    setMaxAllowedSeconds(120);
+    setShowExtendModal(false);
+  }, [user, stopLocalCamera, cleanupP2P]);
 
   // Skip to next stranger
   const skipToNext = useCallback(() => {
+    const targetPeerId = activeRemotePeerIdRef.current || (user?.email?.includes('alex') ? 'stranger_demo_elena_v7' : 'stranger_demo_alex_v7');
+    console.log(`%c[WEBRTC CALL 🛑] Skipping call. Sending END_CALL to ${targetPeerId}`, 'color: #ef4444; font-weight: bold;');
+    p2pSignaling.send('END_CALL', { targetPeerId, senderName: user?.name });
+    cleanupP2P();
     if (matchedUser) {
       skippedIdsRef.current.push(matchedUser.id);
     }
     clearInterval(timerRef.current);
     setCallDuration(0);
+    maxAllowedSecondsRef.current = 120;
+    setMaxAllowedSeconds(120);
+    setShowExtendModal(false);
     setChatMessages([]);
     startSearch();
-  }, [matchedUser, startSearch]);
+  }, [user, matchedUser, startSearch, cleanupP2P]);
 
-  // Attach camera stream & ensure video playback when connected view mounts or stream changes
+  // Attach camera stream & remote stream when connected view mounts
   useEffect(() => {
-    if (callState === 'connected' && callMode === 'video') {
+    if (callState === 'connected') {
       if (localVideoRef.current && localStreamRef.current) {
         localVideoRef.current.muted = true;
         if (localVideoRef.current.srcObject !== localStreamRef.current) {
@@ -180,20 +671,25 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
         }
         localVideoRef.current.play().catch(() => {});
       }
-      if (remoteVideoRef.current) {
+
+      if (isP2PCall && remoteVideoRef.current && remoteStreamRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+        remoteVideoRef.current.play().catch(() => {});
+      } else if (remoteVideoRef.current && !isP2PCall) {
         remoteVideoRef.current.muted = true;
         remoteVideoRef.current.play().catch(() => {});
       }
     }
-  }, [callState, callMode, hasCamStream, matchedUser]);
+  }, [callState, callMode, hasCamStream, matchedUser, isP2PCall]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       clearInterval(timerRef.current);
       stopLocalCamera();
+      cleanupP2P();
     };
-  }, [stopLocalCamera]);
+  }, [stopLocalCamera, cleanupP2P]);
 
   // Disconnect active session if user gets restricted by Admin in real-time
   useEffect(() => {
@@ -202,12 +698,38 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
     }
   }, [isRestricted, callState, endCall]);
 
-  // Scroll chat container to bottom ONLY within its box, without scrolling the window
+  // Scroll chat container to bottom
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [chatMessages]);
+
+  // Set deterministic PeerID for WebSocket signaling
+  useEffect(() => {
+    if (user?.email?.includes('alex') || user?.name?.toLowerCase()?.includes('alex')) {
+      p2pSignaling.setPeerId('stranger_demo_alex_v7');
+    } else if (user?.email?.includes('elena') || user?.name?.toLowerCase()?.includes('elena')) {
+      p2pSignaling.setPeerId('stranger_demo_elena_v7');
+    }
+  }, [user]);
+
+  // Answering incoming WebRTC PeerJS Video Calls (2-way camera sharing)
+  useEffect(() => {
+    p2pSignaling.onIncomingCall = (mediaCall) => {
+      console.log(`%c[WEBRTC CALL 📞] Answering incoming WebRTC video call from ${mediaCall.peer}`, 'color: #10b981; font-weight: bold;');
+      const activeStream = localStreamRef.current || createSyntheticStream(user?.name || 'Demo');
+      mediaCall.answer(activeStream);
+      mediaCall.on('stream', (remoteStream) => {
+        console.log(`%c[WEBRTC CALL 📺] Remote WebRTC stream received & playing!`, 'color: #06b6d4; font-weight: bold;', remoteStream);
+        remoteStreamRef.current = remoteStream;
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch(() => {});
+        }
+      });
+    };
+  }, [user, createSyntheticStream]);
 
   // Send a chat message
   const sendMessage = (e) => {
@@ -216,10 +738,12 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
 
     const { cleanText, isFlagged } = filterTextMessage(chatInput);
 
+    console.log(`%c[P2P CHAT 📤 SENT] Sender: ${user?.name} | Message: "${cleanText}"`, 'color: #3b82f6; font-weight: bold; font-size: 13px;');
+
     setChatMessages((prev) => [
       ...prev,
       {
-        id: `msg-${Date.now()}`,
+        id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         sender: 'me',
         text: cleanText,
         flagged: isFlagged,
@@ -228,25 +752,15 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
     ]);
     setChatInput('');
 
-    // Simulated stranger reply
-    setTimeout(() => {
-      const replies = [
-        'That\'s interesting! Tell me more 😊',
-        'Haha nice one! Where are you from?',
-        'Cool! I love meeting new people here',
-        'That\'s awesome! What do you do for fun?',
-        'Oh wow, I\'ve never heard that before!'
-      ];
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-${Date.now()}`,
-          sender: 'stranger',
-          text: replies[Math.floor(Math.random() * replies.length)],
-          timestamp: new Date().toISOString()
-        }
-      ]);
-    }, 1500 + Math.random() * 2500);
+    const isAlex = user?.email?.includes('alex') || user?.name?.toLowerCase()?.includes('alex');
+    const targetPeerId = isAlex ? 'stranger_demo_elena_v7' : 'stranger_demo_alex_v7';
+
+    // Broadcast chat to target user via PeerJS Cloud WebSocket Engine
+    p2pSignaling.send('P2P_CHAT', {
+      targetPeerId,
+      senderName: user?.name,
+      text: cleanText
+    });
   };
 
   // Format seconds to MM:SS
@@ -620,7 +1134,7 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
   // ═══════════════════════════════════════════════
   // RENDER: CONNECTED STATE — Active Call
   // ═══════════════════════════════════════════════
-  const remainingSeconds = Math.max(0, 120 - callDuration);
+  const remainingSeconds = Math.max(0, maxAllowedSeconds - callDuration);
   const isTimeRunningLow = remainingSeconds <= 30;
 
   return (
@@ -636,7 +1150,16 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
             <span className="text-emerald-300 font-medium xs:hidden">Live</span>
           </div>
 
-          {/* 2-Minute Max Countdown Timer */}
+          {/* Mode Badge: Live 2-User P2P vs Simulated Bot */}
+          <div className={`glass-panel rounded-full px-2.5 sm:px-3 py-1 sm:py-1.5 flex items-center gap-1.5 text-[10px] sm:text-xs font-bold backdrop-blur-md border ${
+            isP2PCall
+              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 animate-pulse'
+              : 'bg-slate-900/90 text-amber-300 border-amber-500/30'
+          }`}>
+            <span>{isP2PCall ? '🟢 LIVE 2-USER P2P MATCH' : '🤖 DEMO BOT'}</span>
+          </div>
+
+          {/* Countdown Timer with + Extend button */}
           <div className={`glass-panel rounded-full px-2.5 sm:px-3 py-1 sm:py-1.5 flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold backdrop-blur-md transition-all ${
             isTimeRunningLow
               ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse'
@@ -644,7 +1167,12 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
           }`}>
             <Clock className="w-3.5 h-3.5 text-amber-400" />
             <span className="font-mono">{formatDuration(remainingSeconds)}</span>
-            <span className="text-[10px] opacity-75 hidden sm:inline">(2m max)</span>
+            <button
+              onClick={() => setShowExtendModal(true)}
+              className="ml-1 px-2 py-0.5 text-[10px] font-extrabold uppercase rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 hover:scale-105 transition-all shadow-sm flex items-center gap-1 cursor-pointer"
+            >
+              + Extend
+            </button>
           </div>
         </div>
 
@@ -805,20 +1333,15 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
                 </div>
               </div>
 
-              {/* Video Content / Fallback */}
+              {/* Video Content / Live WebRTC Stream / Fallback */}
               <div className="w-full h-full relative flex items-center justify-center bg-slate-950">
-                {matchedUser?.videoUrl && !remoteVideoError ? (
-                  <video
-                    ref={remoteVideoRef}
-                    src={matchedUser.videoUrl}
-                    autoPlay
-                    loop
-                    muted
-                    playsInline
-                    onError={() => setRemoteVideoError(true)}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className={`w-full h-full object-cover ${remoteVideoError ? 'hidden' : ''}`}
+                />
+                {remoteVideoError && (
                   /* High quality animated fallback stream card */
                   <div className="w-full h-full relative flex flex-col items-center justify-center p-4 sm:p-6 bg-gradient-to-b from-slate-900 via-violet-950/40 to-slate-950">
                     <div className="relative mb-2.5 sm:mb-4">
@@ -888,6 +1411,7 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
                   autoPlay
                   muted
                   playsInline
+                  style={{ transform: 'scaleX(-1)' }}
                   className={`w-full h-full object-cover ${(!hasCamStream || isCameraOff) ? 'hidden' : ''}`}
                 />
                 {(!hasCamStream || isCameraOff) && (
@@ -942,10 +1466,14 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
             {/* Audio Mute button - Video mode only */}
             {callMode === 'video' && (
               <button
-                onClick={() => {
-                  setIsMuted(!isMuted);
+                onClick={async () => {
+                  const nextMuted = !isMuted;
+                  setIsMuted(nextMuted);
+                  try {
+                    await mediasoupClientService.toggleAudio(nextMuted);
+                  } catch (e) {}
                   if (localStreamRef.current) {
-                    localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = isMuted; });
+                    localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = !nextMuted; });
                   }
                 }}
                 className={`p-2.5 sm:p-3 rounded-full transition-all ${
@@ -962,10 +1490,14 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
             {/* Camera Toggle button - Video mode only */}
             {callMode === 'video' && (
               <button
-                onClick={() => {
-                  setIsCameraOff(!isCameraOff);
+                onClick={async () => {
+                  const nextCamOff = !isCameraOff;
+                  setIsCameraOff(nextCamOff);
+                  try {
+                    await mediasoupClientService.toggleVideo(!nextCamOff);
+                  } catch (e) {}
                   if (localStreamRef.current) {
-                    localStreamRef.current.getVideoTracks().forEach((t) => { t.enabled = isCameraOff; });
+                    localStreamRef.current.getVideoTracks().forEach((t) => { t.enabled = !nextCamOff; });
                   }
                 }}
                 className={`p-2.5 sm:p-3 rounded-full transition-all ${
@@ -1131,6 +1663,155 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
               </button>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* ════════ CALL EXTENSION MODAL ════════ */}
+      {showExtendModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-fade-in">
+          <div className="relative w-full max-w-md bg-slate-900 border border-amber-500/40 rounded-3xl p-5 sm:p-6 shadow-2xl shadow-amber-500/10 space-y-4 sm:space-y-5">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3.5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center shadow-inner shrink-0">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-white">Call Limit Reached</h3>
+                  <p className="text-xs text-slate-400">Extend time to keep talking with {matchedUser?.name?.split(' ')[0] || 'stranger'}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowExtendModal(false)}
+                className="p-1.5 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Current Balance Indicator */}
+            <div className="flex items-center justify-between px-4 py-2.5 rounded-2xl bg-slate-950/80 border border-slate-800/80">
+              <span className="text-xs text-slate-400 font-medium">Your Coins Balance</span>
+              <div className="flex items-center gap-1.5 text-amber-400 font-bold text-sm">
+                <Coins className="w-4 h-4" />
+                <span>{balance} Coins</span>
+              </div>
+            </div>
+
+            {/* Extension Options Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {/* Option 1: +1 Min */}
+              <button
+                onClick={() => handleExtendCall(60, 5, '+1 Min')}
+                className="flex flex-col justify-between p-3 rounded-2xl bg-slate-950 hover:bg-amber-500/10 border border-slate-800 hover:border-amber-500/50 transition-all group text-left"
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white group-hover:text-amber-300 transition-colors">+1 Minute</span>
+                    <span className="text-[10px] font-semibold text-slate-400">5 Coins/min</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Quick extension</p>
+                </div>
+                <div className="mt-2.5 flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-amber-400">5 Coins</span>
+                  <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                    Add +1m
+                  </span>
+                </div>
+              </button>
+
+              {/* Option 2: +5 Mins (Popular) */}
+              <button
+                onClick={() => handleExtendCall(300, 20, '+5 Mins')}
+                className="relative flex flex-col justify-between p-3 rounded-2xl bg-gradient-to-b from-amber-500/15 to-slate-950 hover:from-amber-500/25 border border-amber-500/50 transition-all group text-left shadow-lg shadow-amber-500/10"
+              >
+                <span className="absolute -top-2.5 right-3 px-2 py-0.5 text-[8px] font-extrabold uppercase rounded-full bg-amber-400 text-slate-950 shadow-sm">
+                  Save 20%
+                </span>
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-amber-300">+5 Minutes</span>
+                    <span className="text-[10px] font-semibold text-amber-400/80">4 Coins/min</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Most popular choice</p>
+                </div>
+                <div className="mt-2.5 flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-amber-400">20 Coins</span>
+                  <span className="text-[10px] font-bold text-slate-950 bg-amber-400 px-2 py-0.5 rounded-full shadow-sm">
+                    Add +5m
+                  </span>
+                </div>
+              </button>
+
+              {/* Option 3: +10 Mins (Best Value) */}
+              <button
+                onClick={() => handleExtendCall(600, 35, '+10 Mins')}
+                className="flex flex-col justify-between p-3 rounded-2xl bg-slate-950 hover:bg-amber-500/10 border border-slate-800 hover:border-amber-500/50 transition-all group text-left"
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white group-hover:text-amber-300 transition-colors">+10 Minutes</span>
+                    <span className="text-[10px] font-semibold text-slate-400">3.5 Coins/min</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Best value for long chat</p>
+                </div>
+                <div className="mt-2.5 flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-amber-400">35 Coins</span>
+                  <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                    Add +10m
+                  </span>
+                </div>
+              </button>
+
+              {/* Option 4: Unlimited Pass */}
+              <button
+                onClick={() => handleExtendCall(3600, 50, 'Unlimited Pass')}
+                className="flex flex-col justify-between p-3 rounded-2xl bg-slate-950 hover:bg-amber-500/10 border border-slate-800 hover:border-amber-500/50 transition-all group text-left"
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white group-hover:text-amber-300 transition-colors">Unlimited Pass</span>
+                    <span className="text-[10px] font-semibold text-slate-400">No Limit</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Talk as long as you want</p>
+                </div>
+                <div className="mt-2.5 flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-amber-400">50 Coins</span>
+                  <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                    Unlimited
+                  </span>
+                </div>
+              </button>
+            </div>
+
+            {/* Footer Action Buttons */}
+            <div className="pt-2 flex items-center justify-between gap-3 border-t border-slate-800/80">
+              <button
+                onClick={endCall}
+                className="px-4 py-2 rounded-full text-xs font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition-all"
+              >
+                End Call
+              </button>
+              <button
+                onClick={onOpenWallet}
+                className="px-4 py-2 rounded-full text-xs font-bold text-amber-300 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 transition-all flex items-center gap-1.5"
+              >
+                <Coins className="w-3.5 h-3.5 text-amber-400" />
+                <span>Get Coins</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification Banner */}
+      {toastMessage && (
+        <div className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl shadow-2xl text-xs font-bold backdrop-blur-xl border transition-all animate-bounce ${
+          toastMessage.type === 'error'
+            ? 'bg-rose-950/90 text-rose-200 border-rose-500/50 shadow-rose-950/50'
+            : 'bg-slate-900/95 text-amber-300 border-amber-500/50 shadow-amber-500/20'
+        }`}>
+          {toastMessage.text}
         </div>
       )}
     </div>

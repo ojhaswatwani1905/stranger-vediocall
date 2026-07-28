@@ -67,6 +67,31 @@ export function setupSocketHandler(io: SocketIOServer): void {
     });
 
     /**
+     * Get Room Producers
+     */
+    socket.on('get-room-producers', async ({ roomId }, callback) => {
+      try {
+        const peers = peerManager.getPeersInRoom(roomId).filter((p) => p.socketId !== socket.id);
+        const producers: Array<{ producerId: string; socketId: string; displayName: string; appData: Record<string, unknown> }> = [];
+
+        for (const p of peers) {
+          for (const prod of Array.from(p.producers.values())) {
+            producers.push({
+              producerId: prod.id,
+              socketId: p.socketId,
+              displayName: p.displayName,
+              appData: prod.appData,
+            });
+          }
+        }
+        callback({ success: true, producers });
+      } catch (error: unknown) {
+        const errMessage = error instanceof Error ? error.message : 'Unknown error';
+        callback({ success: false, error: errMessage, producers: [] });
+      }
+    });
+
+    /**
      * Get Router RTP Capabilities
      */
     socket.on('get-router-rtp-capabilities', async ({ roomId }, callback) => {

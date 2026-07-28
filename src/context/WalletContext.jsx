@@ -76,6 +76,27 @@ export const WalletProvider = ({ children }) => {
     return { success: true, balance: newBalance };
   };
 
+  const deductCoins = (amount, description) => {
+    const cost = Number(amount) || 0;
+    if (balance < cost) {
+      return { success: false, reason: 'INSUFFICIENT_FUNDS', costRequired: cost };
+    }
+
+    const newBalance = balance - cost;
+    const newTx = {
+      id: `tx-${Date.now()}`,
+      type: 'debit',
+      amount: cost,
+      balanceAfter: newBalance,
+      description: description || `Spent ${cost} coins`,
+      timestamp: new Date().toISOString()
+    };
+
+    setBalance(newBalance);
+    setTransactions((prev) => [newTx, ...prev]);
+    return { success: true, balance: newBalance };
+  };
+
   const refundCoins = (userId, amount, reason) => {
     const newBalance = balance + amount;
     const newTx = {
@@ -150,6 +171,7 @@ export const WalletProvider = ({ children }) => {
         FILTER_PRICES: filterPrices,
         purchaseCoins,
         spendCoins,
+        deductCoins,
         refundCoins,
         addCoinPack,
         updateCoinPack,

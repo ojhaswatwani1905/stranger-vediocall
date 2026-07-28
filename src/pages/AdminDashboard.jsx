@@ -4,7 +4,7 @@ import {
   TrendingUp, Video, Globe, AlertTriangle, Eye, Ban, AlertOctagon,
   CheckCircle2, XCircle, ArrowUpRight, X, Plus, Trash2, Lock,
   DollarSign, Activity, BarChart3, Clock, Phone, CreditCard, Search,
-  ChevronRight, Edit2, RotateCcw, Award
+  ChevronRight, Edit2, RotateCcw, Award, Menu
 } from 'lucide-react';
 import { useModeration } from '../context/ModerationContext';
 import { useWallet } from '../context/WalletContext';
@@ -34,6 +34,7 @@ export const AdminDashboard = () => {
   } = useWallet();
 
   const [activeSection, setActiveSection] = useState('overview');
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [newKeyword, setNewKeyword] = useState('');
   const [selectedReport, setSelectedReport] = useState(null);
   const [actionNote, setActionNote] = useState('');
@@ -94,12 +95,93 @@ export const AdminDashboard = () => {
     });
   };
 
+  const activeSectionObj = ADMIN_SECTIONS.find(s => s.key === activeSection) || ADMIN_SECTIONS[0];
+
   return (
     <div className="flex flex-col md:flex-row min-h-[calc(100vh-68px)] bg-[#070913]">
       
-      {/* ═══ LEFT SIDEBAR NAVIGATION ═══ */}
-      <aside className="w-full md:w-64 shrink-0 glass-panel border-b md:border-b-0 md:border-r border-slate-800/80 p-3 flex md:flex-col items-center md:items-stretch overflow-x-auto md:overflow-x-visible no-scrollbar gap-2 md:gap-1.5">
-        <div className="px-3 py-2.5 md:mb-2 shrink-0 flex items-center gap-2.5">
+      {/* ═══ MOBILE TOP ADMIN BAR ═══ */}
+      <div className="md:hidden flex items-center justify-between px-3.5 py-2.5 bg-slate-950/95 border-b border-slate-800/90 sticky top-[57px] z-30 backdrop-blur-xl">
+        <button
+          onClick={() => setMobileSidebarOpen(true)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 text-slate-200 hover:text-white border border-slate-800 transition-all text-xs font-bold shadow-sm"
+        >
+          <Menu className="w-4 h-4 text-rose-400" />
+          <span>Admin Menu</span>
+        </button>
+
+        <div className="flex items-center gap-2">
+          <span className="px-2.5 py-1 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[10px] font-extrabold tracking-wide uppercase">
+            {activeSectionObj.label}
+          </span>
+        </div>
+      </div>
+
+      {/* ═══ MOBILE SLIDE-OUT SIDEBAR OVERLAY DRAWER ═══ */}
+      {mobileSidebarOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex">
+          {/* Dark Backdrop Overlay */}
+          <div
+            className="fixed inset-0 bg-slate-950/85 backdrop-blur-md transition-opacity animate-fade-in"
+            onClick={() => setMobileSidebarOpen(false)}
+          />
+
+          {/* Drawer Sidebar */}
+          <aside className="relative w-72 max-w-[85vw] h-full bg-slate-950 border-r border-slate-800/90 p-4 flex flex-col z-10 shadow-2xl overflow-y-auto">
+            <div className="flex items-center justify-between pb-3.5 mb-3.5 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-500 flex items-center justify-center text-white shadow-lg shadow-rose-500/20">
+                  <ShieldAlert className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <span className="text-sm font-extrabold text-white block tracking-tight">Admin Console</span>
+                  <span className="text-[10px] text-slate-400">Governance & Controls</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setMobileSidebarOpen(false)}
+                className="p-1.5 rounded-lg bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1 flex-1">
+              {ADMIN_SECTIONS.map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => {
+                    setActiveSection(key);
+                    setMobileSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                    activeSection === key
+                      ? 'bg-gradient-to-r from-rose-500/20 via-purple-500/15 to-amber-500/10 text-white border border-rose-500/30 shadow-md shadow-rose-500/10 font-bold'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-900/60'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 ${activeSection === key ? 'text-rose-400' : 'text-slate-400'}`} />
+                  <span>{label}</span>
+                  {key === 'moderation' && pendingReportsCount > 0 && (
+                    <span className="ml-auto px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/30">
+                      {pendingReportsCount}
+                    </span>
+                  )}
+                  {key === 'users' && (bannedCount + suspendedCount) > 0 && (
+                    <span className="ml-auto px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
+                      {bannedCount + suspendedCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* ═══ DESKTOP LEFT SIDEBAR NAVIGATION ═══ */}
+      <aside className="hidden md:flex w-64 shrink-0 glass-panel border-r border-slate-800/80 p-3 flex-col items-stretch gap-1.5">
+        <div className="px-3 py-2.5 mb-2 shrink-0 flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-500 flex items-center justify-center text-white shadow-lg shadow-rose-500/20">
             <ShieldAlert className="w-4.5 h-4.5" />
           </div>
@@ -109,12 +191,12 @@ export const AdminDashboard = () => {
           </div>
         </div>
 
-        <div className="flex md:flex-col items-center md:items-stretch gap-1.5 md:gap-1 w-full overflow-x-auto no-scrollbar">
+        <div className="flex flex-col gap-1 w-full">
           {ADMIN_SECTIONS.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               onClick={() => setActiveSection(key)}
-              className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
+              className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
                 activeSection === key
                   ? 'bg-gradient-to-r from-rose-500/20 via-purple-500/15 to-amber-500/10 text-white border border-rose-500/30 shadow-md shadow-rose-500/10'
                   : 'text-slate-400 hover:text-white hover:bg-slate-900/60'

@@ -1,0 +1,35 @@
+services:
+  # 1. MediaSoup SFU Backend Server (Docker Web Service)
+  - type: web
+    name: mediasoup-sfu-backend
+    env: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    plan: free
+    region: singapore
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: LISTEN_IP
+        value: 0.0.0.0
+      - key: ANNOUNCED_IP
+        sync: false # Set to your Render service external hostname or IP in Render dashboard
+      - key: MEDIASOUP_MIN_PORT
+        value: 40000
+      - key: MEDIASOUP_MAX_PORT
+        value: 49999
+      - key: MEDIASOUP_NUM_WORKERS
+        value: 0
+
+  # 2. React Frontend Web Application (Static Site)
+  - type: web
+    name: stranger-video-frontend
+    env: static
+    buildCommand: npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_SIGNALING_URL
+        fromService:
+          type: web
+          name: mediasoup-sfu-backend
+          property: host
