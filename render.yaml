@@ -1,12 +1,14 @@
 services:
-  # 1. MediaSoup SFU Backend Server (Docker Web Service)
+  # 1. MediaSoup SFU Backend Server (Node.js Web Service)
   - type: web
     name: mediasoup-sfu-backend
-    env: docker
-    dockerfilePath: ./server/Dockerfile
-    dockerContext: ./server
+    env: node
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
     plan: free
     region: singapore
+
     envVars:
       - key: PORT
         value: 3000
