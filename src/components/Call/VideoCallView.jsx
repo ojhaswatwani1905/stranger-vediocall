@@ -661,24 +661,26 @@ export const VideoCallView = ({ onReport, walletFilters, onOpenWallet, onOpenAut
     startSearch();
   }, [user, matchedUser, startSearch, cleanupP2P]);
 
+  // Auto-initialize camera preview on mount
+  useEffect(() => {
+    if (!localStreamRef.current) {
+      startLocalCamera();
+    }
+  }, [startLocalCamera]);
+
   // Attach camera stream & remote stream when connected view mounts
   useEffect(() => {
-    if (callState === 'connected') {
-      if (localVideoRef.current && localStreamRef.current) {
-        localVideoRef.current.muted = true;
-        if (localVideoRef.current.srcObject !== localStreamRef.current) {
-          localVideoRef.current.srcObject = localStreamRef.current;
-        }
-        localVideoRef.current.play().catch(() => {});
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.muted = true;
+      if (localVideoRef.current.srcObject !== localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
       }
+      localVideoRef.current.play().catch(() => {});
+    }
 
-      if (isP2PCall && remoteVideoRef.current && remoteStreamRef.current) {
-        remoteVideoRef.current.srcObject = remoteStreamRef.current;
-        remoteVideoRef.current.play().catch(() => {});
-      } else if (remoteVideoRef.current && !isP2PCall) {
-        remoteVideoRef.current.muted = true;
-        remoteVideoRef.current.play().catch(() => {});
-      }
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      remoteVideoRef.current.play().catch(() => {});
     }
   }, [callState, callMode, hasCamStream, matchedUser, isP2PCall]);
 
